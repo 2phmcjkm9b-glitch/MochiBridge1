@@ -14,11 +14,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show project files
-        run: |
-          echo "Project structure:"
-          find MochiBridge -maxdepth 3 -type f | sort
-
       - name: Build unsigned iOS app
         working-directory: MochiBridge
         run: |
@@ -54,18 +49,13 @@ jobs:
           APP_DIR="Payload/$(basename "$APP_PATH")"
           EXECUTABLE="$APP_DIR/MochiBridge"
 
-          echo "APP: $APP_DIR"
-          echo "EXECUTABLE: $EXECUTABLE"
-
           if [ ! -f "$EXECUTABLE" ]; then
             echo "ERROR: executable not found"
             exit 1
           fi
 
-          # Явно делаем основной бинарник исполняемым
           chmod 755 "$EXECUTABLE"
 
-          # Проверяем Info.plist
           /usr/libexec/PlistBuddy \
             -c "Set :CFBundleExecutable MochiBridge" \
             "$APP_DIR/Info.plist" || \
@@ -73,24 +63,17 @@ jobs:
             -c "Add :CFBundleExecutable string MochiBridge" \
             "$APP_DIR/Info.plist"
 
-          echo ""
           echo "=== EXECUTABLE CHECK ==="
           ls -l "$EXECUTABLE"
           file "$EXECUTABLE"
 
-          echo ""
           echo "=== PLIST CHECK ==="
           /usr/libexec/PlistBuddy \
             -c "Print :CFBundleExecutable" \
             "$APP_DIR/Info.plist"
 
-          # Создаём IPA с сохранением Unix permissions
-          cd Payload/..
-          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-unsigned.ipa
-
-          echo ""
-          echo "=== IPA CREATED ==="
-          ls -lh MochiBridge-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent \
+            Payload MochiBridge-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
