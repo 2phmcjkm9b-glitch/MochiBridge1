@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key><string>Mochi Bridge</string>
+	<key>CFBundleIdentifier</key><string>com.vitaliy.MochiBridge</string>
+	<key>CFBundleName</key><string>MochiBridge</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleShortVersionString</key><string>1.0</string>
+	<key>CFBundleVersion</key><string>1</string>
+	<key>LSRequiresIPhoneOS</key><true/>
+	<key>NSBluetoothAlwaysUsageDescription</key><string>Mochi Bridge использует Bluetooth для подключения к роботу The Mochi.</string>
+	<key>UIBackgroundModes</key><array><string>bluetooth-central</string></array>
+	<key>UILaunchScreen</key><dict/>
+</dict>
+</plist>
