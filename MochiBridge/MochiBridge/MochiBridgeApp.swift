@@ -27,7 +27,6 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     private var timer: Timer?
     private var reconnectTimer: Timer?
     private var isConnecting = false
-    private var reconnectTimer: Timer?
     private var scanning = false
     private var shouldReconnect = true
     private let calls = CXCallObserver()
