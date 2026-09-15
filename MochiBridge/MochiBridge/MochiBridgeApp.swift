@@ -19,6 +19,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     @Published var battery = 0
     @Published var log: [String] = []
     @Published var connected = false
+    @Published var ready = false
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -31,6 +32,8 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     private var shouldReconnect = true
     private let calls = CXCallObserver()
     private var knownCalls: Set<UUID> = []
+    private var writeQueue: [[UInt8]] = []
+    private var writeInProgress = false
 
     override init() {
         super.init()
@@ -50,6 +53,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard central.state == .poweredOn else {
             connected = false
+            ready = false
             switch central.state {
             case .poweredOff: status = "Включи Bluetooth на iPhone"
             case .unauthorized: status = "Разреши Bluetooth для Mochi Bridge"
@@ -63,7 +67,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func scan() {
-        guard central.state == .poweredOn, !connected else { return }
+        guard central.state == .poweredOn, !connected, !isConnecting else { return }
         reconnectTimer?.invalidate()
         reconnectTimer = nil
         central.stopScan()
@@ -74,7 +78,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
             guard let self else { return }
             self.central.stopScan()
             self.scanning = false
-            if !self.connected {
+            if !self.connected && !self.isConnecting {
                 self.status = "Mochi не найден — повторяю поиск…"
                 self.scheduleReconnect(delay: 2)
             }
@@ -82,6 +86,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        guard !connected, !isConnecting else { return }
         connect(peripheral)
     }
 
@@ -90,6 +95,10 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         scanning = false
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+        isConnecting = true
+        ready = false
+        writeQueue.removeAll()
+        writeInProgress = false
         peripheral = p
         p.delegate = self
         deviceName = p.name ?? "THE MOCHI"
@@ -100,30 +109,42 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         isConnecting = false
         connected = true
+        ready = false
+        writeQueue.removeAll()
+        writeInProgress = false
         status = "Подключено — ищу характеристики…"
         peripheral.delegate = self
         peripheral.discoverServices([Self.serviceUUID])
-        startPeriodicSync()
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        isConnecting = false
         connected = false
-        rx = nil; tx = nil
+        ready = false
+        rx = nil
+        tx = nil
+        writeQueue.removeAll()
+        writeInProgress = false
         status = "Не удалось подключиться — повторяю…"
         scheduleReconnect(delay: 1.5)
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         guard self.peripheral === peripheral || self.peripheral?.identifier == peripheral.identifier else { return }
+        isConnecting = false
         connected = false
-        rx = nil; tx = nil
+        ready = false
+        rx = nil
+        tx = nil
+        writeQueue.removeAll()
+        writeInProgress = false
         timer?.invalidate()
         status = "Отключено — переподключение…"
         scheduleReconnect(delay: 1)
     }
 
     private func scheduleReconnect(delay: TimeInterval) {
-        guard shouldReconnect, central.state == .poweredOn, !connected else { return }
+        guard shouldReconnect, central.state == .poweredOn, !connected, !isConnecting else { return }
         reconnectTimer?.invalidate()
         reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             self?.scan()
@@ -133,7 +154,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil,
               let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
-            status = "Ошибка BLE — повторяю подключение…"
+            status = "Ошибка BLE — переподключение…"
             central.cancelPeripheralConnection(peripheral)
             return
         }
@@ -141,7 +162,12 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard error == nil else { return }
+        guard error == nil else {
+            status = "Ошибка характеристик — переподключение…"
+            central.cancelPeripheralConnection(peripheral)
+            return
+        }
+
         for c in service.characteristics ?? [] {
             if c.uuid == Self.rxUUID { rx = c }
             if c.uuid == Self.txUUID {
@@ -149,74 +175,144 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
                 peripheral.setNotifyValue(true, for: c)
             }
         }
-        if rx != nil {
-            status = "Подключено"
-            syncAll()
+
+        guard let writeCharacteristic = rx else {
+            status = "RX характеристика не найдена"
+            return
         }
+
+        let canWrite = writeCharacteristic.properties.contains(.write) || writeCharacteristic.properties.contains(.writeWithoutResponse)
+        guard canWrite else {
+            status = "RX не поддерживает запись"
+            return
+        }
+
+        ready = true
+        status = "Подключено"
+        addLog("BLE READY: RX=\(writeCharacteristic.properties.rawValue) TX=\(tx != nil ? "OK" : "нет")")
+        syncAll()
+        startPeriodicSync()
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error { addLog("RX ERROR: \(error.localizedDescription)") ; return }
         guard let data = characteristic.value else { return }
         addLog("RX: \(hex(data))")
     }
 
-    private func write(_ bytes: [UInt8]) {
-        guard connected, let p = peripheral, let c = rx else {
-            addLog("TX пропущен: Mochi не подключён")
+    private func write(_ bytes: [UInt8], label: String = "") {
+        guard !bytes.isEmpty else { return }
+        guard connected, ready, peripheral != nil, rx != nil else {
+            addLog("TX SKIP \(label): BLE не готов")
             return
         }
-        let data = Data(bytes)
-        let type: CBCharacteristicWriteType = c.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
-        p.writeValue(data, for: c, type: type)
-        addLog("TX: \(hex(data))")
+        writeQueue.append(bytes)
+        if !label.isEmpty { addLog("QUEUE \(label): \(hex(Data(bytes)))") }
+        processWriteQueue()
     }
 
-    func syncAll() { sendBattery(); sendTime() }
-    @objc private func batteryChanged() { if connected { sendBattery() } }
+    private func processWriteQueue() {
+        guard !writeInProgress, connected, ready,
+              let p = peripheral, let c = rx,
+              !writeQueue.isEmpty else { return }
+
+        let bytes = writeQueue.removeFirst()
+        let data = Data(bytes)
+        let canWithoutResponse = c.properties.contains(.writeWithoutResponse)
+        let canWithResponse = c.properties.contains(.write)
+        guard canWithoutResponse || canWithResponse else {
+            addLog("TX ERROR: RX cannot write")
+            return
+        }
+
+        let type: CBCharacteristicWriteType = canWithoutResponse ? .withoutResponse : .withResponse
+        writeInProgress = true
+        addLog("TX: \(hex(data))")
+        p.writeValue(data, for: c, type: type)
+
+        if type == .withoutResponse {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                guard let self else { return }
+                self.writeInProgress = false
+                self.processWriteQueue()
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error {
+            addLog("TX ERROR: \(error.localizedDescription)")
+        } else {
+            addLog("TX OK")
+        }
+        writeInProgress = false
+        processWriteQueue()
+    }
+
+    func syncAll() {
+        guard ready else { return }
+        sendBattery()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.sendTime() }
+    }
+
+    @objc private func batteryChanged() { if ready { sendBattery() } }
 
     func sendBattery() {
+        guard ready else { return }
         let level = max(0, min(100, Int(round(UIDevice.current.batteryLevel * 100))))
         battery = level
         let charging = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
-        write([0xAB, 0x00, 0x05, 0xFE, 0x91, 0x80, charging ? 0x01 : 0x00, UInt8(level)])
+        write([0xAB, 0x00, 0x05, 0xFE, 0x91, 0x80, charging ? 0x01 : 0x00, UInt8(level)], label: "BATTERY")
     }
 
     func sendTime() {
+        guard ready else { return }
         let d = Date(); let cal = Calendar.current
         let year = cal.component(.year, from: d), month = cal.component(.month, from: d), day = cal.component(.day, from: d)
         let hour = cal.component(.hour, from: d), minute = cal.component(.minute, from: d), second = cal.component(.second, from: d)
         write([0xAB, 0x00, 0x0B, 0xFE, 0x93, 0x80, 0x00,
-               UInt8((year >> 8) & 0xFF), UInt8(year & 0xFF), UInt8(month), UInt8(day), UInt8(hour), UInt8(minute), UInt8(second)])
+               UInt8((year >> 8) & 0xFF), UInt8(year & 0xFF), UInt8(month), UInt8(day), UInt8(hour), UInt8(minute), UInt8(second)], label: "TIME")
     }
 
-    // Verified Chronos/Mochi format:
-    // AB 00 LEN FF 72 80 0A 02 UTF8_TEXT
+    // Verified working Mochi/Chronos packet for TEST:
+    // AB 00 09 FF 72 80 0A 02 54 45 53 54
+    func sendTestNotification() {
+        write([0xAB, 0x00, 0x09, 0xFF, 0x72, 0x80, 0x0A, 0x02, 0x54, 0x45, 0x53, 0x54], label: "TEST NOTIFICATION")
+    }
+
     func sendNotification(text: String) {
         let payload = Array(text.utf8)
         let length = 5 + payload.count
-        guard length <= 0xFF else { return }
-        write([0xAB, 0x00, UInt8(length), 0xFF, 0x72, 0x80, 0x0A, 0x02] + payload)
+        guard length <= 0xFF else { addLog("NOTIFY SKIP: текст слишком длинный"); return }
+        write([0xAB, 0x00, UInt8(length), 0xFF, 0x72, 0x80, 0x0A, 0x02] + payload, label: "NOTIFICATION")
     }
 
-    // Verified Chronos/Mochi media commands.
-    private func musicCommand(_ lowByte: UInt8) {
-        write([0xAB, 0x00, 0x04, 0xFF, 0x9D, 0x80, lowByte])
+    private func musicCommand(_ lowByte: UInt8, name: String) {
+        guard ready else { addLog("MUSIC SKIP \(name): BLE не готов"); return }
+        let packet: [UInt8] = [0xAB, 0x00, 0x04, 0xFF, 0x9D, 0x80, lowByte]
+        addLog("MUSIC BUTTON: \(name)")
+        write(packet, label: "MUSIC \(name)")
     }
-    func musicPlayPause() { musicCommand(0x00) }
-    func musicPrevious() { musicCommand(0x02) }
-    func musicNext() { musicCommand(0x03) }
+
+    func musicPlayPause() { musicCommand(0x00, name: "PLAY/PAUSE") }
+    func musicPrevious() { musicCommand(0x02, name: "PREVIOUS") }
+    func musicNext() { musicCommand(0x03, name: "NEXT") }
 
     func sendIncomingCall() {
-        write([0xAB, 0x00, 0x09, 0xFF, 0x72, 0x80, 0x01, 0x01] + Array("Входящий".utf8))
+        let payload = Array("Входящий".utf8)
+        let length = UInt8(5 + payload.count)
+        write([0xAB, 0x00, length, 0xFF, 0x72, 0x80, 0x01, 0x01] + payload, label: "CALL IN")
     }
+
     func endCall() {
-        write([0xAB, 0x00, 0x05, 0xFF, 0x72, 0x80, 0x02, 0x00])
+        write([0xAB, 0x00, 0x05, 0xFF, 0x72, 0x80, 0x02, 0x00], label: "CALL END")
     }
 
     func startPeriodicSync() {
         timer?.invalidate()
+        guard ready else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            guard let self, self.connected else { return }
+            guard let self, self.ready else { return }
             self.syncAll()
         }
     }
@@ -233,12 +329,16 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         log.insert(s, at: 0)
         if log.count > 60 { log.removeLast() }
     }
-    private func hex(_ data: Data) -> String { data.map { String(format: "%02X", $0) }.joined(separator: " ") }
+
+    private func hex(_ data: Data) -> String {
+        data.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
 }
 
 struct ContentView: View {
     @ObservedObject var bridge: MochiBridge
     @State private var notification = "TEST"
+
     var body: some View {
         NavigationStack {
             List {
@@ -247,17 +347,24 @@ struct ContentView: View {
                     Text(bridge.deviceName)
                     Button("Поиск снова") { bridge.scan() }
                 }
+
                 Section("Синхронизация") {
                     Button("Отправить заряд iPhone: \(bridge.battery)%") { bridge.sendBattery() }
                     Button("Отправить время") { bridge.sendTime() }
                     TextField("Текст уведомления", text: $notification)
-                    Button("Тестовое уведомление") { bridge.sendNotification(text: notification) }
+                    Button("Тестовое TEST") { bridge.sendTestNotification() }
+                    Button("Отправить уведомление") { bridge.sendNotification(text: notification) }
                 }
+
                 Section("Музыка") {
                     Button("Play / Pause") { bridge.musicPlayPause() }
+                        .disabled(!bridge.ready)
                     Button("Предыдущий") { bridge.musicPrevious() }
+                        .disabled(!bridge.ready)
                     Button("Следующий") { bridge.musicNext() }
+                        .disabled(!bridge.ready)
                 }
+
                 Section("BLE лог") {
                     ForEach(Array(bridge.log.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.system(.caption, design: .monospaced))
