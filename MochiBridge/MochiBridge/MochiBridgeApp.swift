@@ -2,23 +2,17 @@ import SwiftUI
 import CoreBluetooth
 import UIKit
 import CallKit
-import MediaPlayer
 
 @main
 struct MochiBridgeApp: App {
     @StateObject private var bridge = MochiBridge()
-
-    var body: some Scene {
-        WindowGroup {
-            ContentView(bridge: bridge)
-        }
-    }
+    var body: some Scene { WindowGroup { ContentView(bridge: bridge) } }
 }
 
 final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate, CXCallObserverDelegate {
     static let serviceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
-    static let txUUID = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E") // notify: Mochi -> iPhone
-    static let rxUUID = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E") // write: iPhone -> Mochi
+    static let txUUID = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+    static let rxUUID = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 
     @Published var status = "Запуск Bluetooth…"
     @Published var deviceName = "—"
@@ -31,6 +25,11 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     private var rx: CBCharacteristic?
     private var tx: CBCharacteristic?
     private var timer: Timer?
+    private var reconnectTimer: Timer?
+    private var isConnecting = false
+    private var reconnectTimer: Timer?
+    private var scanning = false
+    private var shouldReconnect = true
     private let calls = CXCallObserver()
     private var knownCalls: Set<UUID> = []
 
@@ -43,73 +42,107 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         NotificationCenter.default.addObserver(self, selector: #selector(batteryChanged), name: UIDevice.batteryStateDidChangeNotification, object: nil)
     }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        timer?.invalidate()
+        reconnectTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        switch central.state {
-        case .poweredOn:
-            status = "Ищу THE MOCHI…"
-            scan()
-        case .poweredOff: status = "Включи Bluetooth на iPhone"
-        case .unauthorized: status = "Разреши Bluetooth для Mochi Bridge"
-        case .unsupported: status = "BLE не поддерживается"
-        default: status = "Bluetooth: \(central.state.rawValue)"
+        guard central.state == .poweredOn else {
+            connected = false
+            switch central.state {
+            case .poweredOff: status = "Включи Bluetooth на iPhone"
+            case .unauthorized: status = "Разреши Bluetooth для Mochi Bridge"
+            case .unsupported: status = "BLE не поддерживается"
+            default: status = "Bluetooth: \(central.state.rawValue)"
+            }
+            return
         }
+        status = "Ищу THE MOCHI…"
+        scan()
     }
 
     func scan() {
-        guard central.state == .poweredOn else { return }
+        guard central.state == .poweredOn, !connected else { return }
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
         central.stopScan()
+        scanning = true
+        status = "Ищу THE MOCHI…"
         central.scanForPeripherals(withServices: [Self.serviceUUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
             guard let self else { return }
             self.central.stopScan()
-            if !self.connected { self.status = "Mochi не найден — нажми «Поиск снова»" }
+            self.scanning = false
+            if !self.connected {
+                self.status = "Mochi не найден — повторяю поиск…"
+                self.scheduleReconnect(delay: 2)
+            }
         }
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        if let name = peripheral.name, name.uppercased().contains("MOCHI") || name == "THE MOCHI" {
-            connect(peripheral)
-        } else {
-            connect(peripheral) // service UUID already identifies Mochi protocol
-        }
+        connect(peripheral)
     }
 
     func connect(_ p: CBPeripheral) {
         central.stopScan()
+        scanning = false
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
         peripheral = p
         p.delegate = self
         deviceName = p.name ?? "THE MOCHI"
         status = "Подключение…"
-        central.connect(p, options: nil)
+        central.connect(p, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true])
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        isConnecting = false
         connected = true
-        status = "Подключено"
+        status = "Подключено — ищу характеристики…"
         peripheral.delegate = self
         peripheral.discoverServices([Self.serviceUUID])
         startPeriodicSync()
     }
 
-    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connected = false
         rx = nil; tx = nil
-        status = "Отключено — ищу снова…"
-        startScanAfterDisconnect()
+        status = "Не удалось подключиться — повторяю…"
+        scheduleReconnect(delay: 1.5)
     }
 
-    private func startScanAfterDisconnect() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.scan() }
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        guard self.peripheral === peripheral || self.peripheral?.identifier == peripheral.identifier else { return }
+        connected = false
+        rx = nil; tx = nil
+        timer?.invalidate()
+        status = "Отключено — переподключение…"
+        scheduleReconnect(delay: 1)
+    }
+
+    private func scheduleReconnect(delay: TimeInterval) {
+        guard shouldReconnect, central.state == .poweredOn, !connected else { return }
+        reconnectTimer?.invalidate()
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            self?.scan()
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else { return }
+        guard error == nil,
+              let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
+            status = "Ошибка BLE — повторяю подключение…"
+            central.cancelPeripheralConnection(peripheral)
+            return
+        }
         peripheral.discoverCharacteristics([Self.rxUUID, Self.txUUID], for: service)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard error == nil else { return }
         for c in service.characteristics ?? [] {
             if c.uuid == Self.rxUUID { rx = c }
             if c.uuid == Self.txUUID {
@@ -118,7 +151,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
             }
         }
         if rx != nil {
-            status = "Подключено — синхронизация"
+            status = "Подключено"
             syncAll()
         }
     }
@@ -129,18 +162,17 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     private func write(_ bytes: [UInt8]) {
-        guard let p = peripheral, let c = rx else { addLog("Нет RX-характеристики"); return }
+        guard connected, let p = peripheral, let c = rx else {
+            addLog("TX пропущен: Mochi не подключён")
+            return
+        }
         let data = Data(bytes)
         let type: CBCharacteristicWriteType = c.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
         p.writeValue(data, for: c, type: type)
         addLog("TX: \(hex(data))")
     }
 
-    func syncAll() {
-        sendBattery()
-        sendTime()
-    }
-
+    func syncAll() { sendBattery(); sendTime() }
     @objc private func batteryChanged() { if connected { sendBattery() } }
 
     func sendBattery() {
@@ -151,67 +183,63 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func sendTime() {
-        let d = Date()
-        let cal = Calendar.current
-        let year = cal.component(.year, from: d)
-        let month = cal.component(.month, from: d)
-        let day = cal.component(.day, from: d)
-        let hour = cal.component(.hour, from: d)
-        let minute = cal.component(.minute, from: d)
-        let second = cal.component(.second, from: d)
+        let d = Date(); let cal = Calendar.current
+        let year = cal.component(.year, from: d), month = cal.component(.month, from: d), day = cal.component(.day, from: d)
+        let hour = cal.component(.hour, from: d), minute = cal.component(.minute, from: d), second = cal.component(.second, from: d)
         write([0xAB, 0x00, 0x0B, 0xFE, 0x93, 0x80, 0x00,
                UInt8((year >> 8) & 0xFF), UInt8(year & 0xFF), UInt8(month), UInt8(day), UInt8(hour), UInt8(minute), UInt8(second)])
     }
 
-    // Chronos notification format: icon, state=2, UTF-8 message.
-    func sendNotification(text: String, icon: UInt8 = 0x03) {
+    // Verified Chronos/Mochi format:
+    // AB 00 LEN FF 72 80 0A 02 UTF8_TEXT
+    func sendNotification(text: String) {
         let payload = Array(text.utf8)
         let length = 5 + payload.count
         guard length <= 0xFF else { return }
-        write([0xAB, 0x00, UInt8(length), 0xFF, 0x72, icon, 0x02] + payload)
+        write([0xAB, 0x00, UInt8(length), 0xFF, 0x72, 0x80, 0x0A, 0x02] + payload)
     }
 
-    func sendIncomingCall(name: String) {
-        let p = Array(name.utf8)
-        write([0xAB, 0x00, UInt8(5 + p.count), 0xFF, 0x72, 0x01, 0x01] + p)
+    // Verified Chronos/Mochi media commands.
+    private func musicCommand(_ lowByte: UInt8) {
+        write([0xAB, 0x00, 0x04, 0xFF, 0x9D, 0x80, lowByte])
     }
+    func musicPlayPause() { musicCommand(0x00) }
+    func musicPrevious() { musicCommand(0x02) }
+    func musicNext() { musicCommand(0x03) }
 
-    func endCall(name: String = "") {
-        let p = Array(name.utf8)
-        write([0xAB, 0x00, UInt8(5 + p.count), 0xFF, 0x72, 0x02, 0x00] + p)
+    func sendIncomingCall() {
+        write([0xAB, 0x00, 0x09, 0xFF, 0x72, 0x80, 0x01, 0x01] + Array("Входящий".utf8))
     }
-
-    // Phone-side media controls. iOS does not expose arbitrary apps' track metadata;
-    // transport controls can be sent through the system media player.
-    func musicPlayPause() { MPMusicPlayerController.systemMusicPlayer.playbackState == .playing ? MPMusicPlayerController.systemMusicPlayer.pause() : MPMusicPlayerController.systemMusicPlayer.play() }
-    func musicNext() { MPMusicPlayerController.systemMusicPlayer.skipToNextItem() }
-    func musicPrevious() { MPMusicPlayerController.systemMusicPlayer.skipToPreviousItem() }
+    func endCall() {
+        write([0xAB, 0x00, 0x05, 0xFF, 0x72, 0x80, 0x02, 0x00])
+    }
 
     func startPeriodicSync() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.syncAll() }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            guard let self, self.connected else { return }
+            self.syncAll()
+        }
     }
 
     func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
         if call.hasEnded {
             if knownCalls.remove(call.uuid) != nil { endCall() }
         } else if !call.hasConnected && !call.isOutgoing {
-            if knownCalls.insert(call.uuid).inserted { sendIncomingCall(name: "Входящий звонок") }
+            if knownCalls.insert(call.uuid).inserted { sendIncomingCall() }
         }
     }
 
     func addLog(_ s: String) {
         log.insert(s, at: 0)
-        if log.count > 40 { log.removeLast() }
+        if log.count > 60 { log.removeLast() }
     }
-
     private func hex(_ data: Data) -> String { data.map { String(format: "%02X", $0) }.joined(separator: " ") }
 }
 
 struct ContentView: View {
     @ObservedObject var bridge: MochiBridge
-    @State private var notification = "Hello from iPhone!"
-
+    @State private var notification = "TEST"
     var body: some View {
         NavigationStack {
             List {
@@ -230,8 +258,6 @@ struct ContentView: View {
                     Button("Play / Pause") { bridge.musicPlayPause() }
                     Button("Предыдущий") { bridge.musicPrevious() }
                     Button("Следующий") { bridge.musicNext() }
-                    Text("Название трека/исполнитель автоматически получать от других iOS-приложений нельзя через публичный API iOS.")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("BLE лог") {
                     ForEach(Array(bridge.log.enumerated()), id: \.offset) { _, line in
