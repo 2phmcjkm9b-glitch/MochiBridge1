@@ -1,0 +1,58 @@
+name: Build MochiBridge iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show project files
+        run: |
+          echo "Project structure:"
+          find MochiBridge -maxdepth 3 -type f | sort
+
+      - name: Build unsigned iOS app
+        working-directory: MochiBridge
+        run: |
+          xcodebuild \
+            -project MochiBridge.xcodeproj \
+            -scheme MochiBridge \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Create IPA
+        run: |
+          mkdir -p Payload
+
+          APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos \
+            -maxdepth 1 \
+            -name "*.app" \
+            -type d | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: MochiBridge.app was not found"
+            exit 1
+          fi
+
+          cp -R "$APP_PATH" Payload/
+
+          zip -r MochiBridge-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MochiBridge-unsigned-IPA
+          path: MochiBridge-unsigned.ipa
+          if-no-files-found: error
