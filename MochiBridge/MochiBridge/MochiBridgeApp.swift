@@ -35,6 +35,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     private var syncTimer: Timer?
     private var isConnecting = false
     private var shouldReconnect = true
+    private var reconnectDelay: TimeInterval = 1
     private var queue: [Data] = []
     private var writing = false
     private let calls = CXCallObserver()
@@ -58,7 +59,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         NotificationCenter.default.addObserver(self, selector: #selector(batteryChanged), name: UIDevice.batteryLevelDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(batteryChanged), name: UIDevice.batteryStateDidChangeNotification, object: nil)
         music.beginGeneratingPlaybackNotifications()
-        MPMediaLibrary.requestAuthorization { _ in }
+        DispatchQueue.main.async { [weak self] in self?.updateBatteryValue() }
     }
 
     deinit {
@@ -78,13 +79,20 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
 
     func scan() {
         guard central.state == .poweredOn, !connected, !isConnecting else { return }
-        reconnectTimer?.invalidate(); central.stopScan()
+        reconnectTimer?.invalidate()
+        central.stopScan()
         status = "Ищу THE MOCHI…"
+        let known = central.retrieveConnectedPeripherals(withServices: [Self.serviceUUID])
+        if let p = known.first {
+            addLog("BLE: найдено ранее подключённое устройство")
+            connect(p)
+            return
+        }
         central.scanForPeripherals(withServices: [Self.serviceUUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
             guard let self else { return }
             self.central.stopScan()
-            if !self.connected && !self.isConnecting { self.scheduleReconnect(2) }
+            if !self.connected && !self.isConnecting { self.scheduleReconnect(self.reconnectDelay) }
         }
     }
 
@@ -99,18 +107,25 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        isConnecting = false; connected = true; ready = false
+        isConnecting = false; connected = true; ready = false; reconnectDelay = 1
         peripheral.delegate = self; status = "Подключено — ищу характеристики…"
+        addLog("BLE CONNECTED")
         peripheral.discoverServices([Self.serviceUUID])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        isConnecting = false; connected = false; ready = false; scheduleReconnect(1)
+        isConnecting = false; connected = false; ready = false
+        addLog("BLE CONNECT ERROR: \(error?.localizedDescription ?? "unknown")")
+        scheduleReconnect(reconnectDelay)
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         connected = false; ready = false; rx = nil; tx = nil; writing = false; queue.removeAll()
-        syncTimer?.invalidate(); status = "Отключено — переподключение…"; scheduleReconnect(1)
+        syncTimer?.invalidate()
+        addLog("BLE DISCONNECTED: \(error?.localizedDescription ?? "без ошибки")")
+        status = "Отключено — переподключение…"
+        reconnectDelay = min(reconnectDelay * 1.5, 10)
+        scheduleReconnect(reconnectDelay)
     }
 
     private func scheduleReconnect(_ delay: TimeInterval) {
@@ -120,7 +135,10 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard error == nil, let s = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else { central.cancelPeripheralConnection(peripheral); return }
+        guard error == nil, let s = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
+            addLog("BLE SERVICE ERROR")
+            central.cancelPeripheralConnection(peripheral); return
+        }
         peripheral.discoverCharacteristics([Self.rxUUID, Self.txUUID], for: s)
     }
 
@@ -130,10 +148,16 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
             if c.uuid == Self.rxUUID { rx = c }
             if c.uuid == Self.txUUID { tx = c; peripheral.setNotifyValue(true, for: c) }
         }
-        guard let r = rx, r.properties.contains(.write) || r.properties.contains(.writeWithoutResponse) else { status = "RX не поддерживает запись"; return }
+        guard let r = rx, r.properties.contains(.write) || r.properties.contains(.writeWithoutResponse) else {
+            status = "RX не поддерживает запись"; return
+        }
         ready = true; status = "Подключено"
         addLog("BLE READY RX=\(r.properties.rawValue) TX=\(tx != nil ? "OK" : "нет")")
         syncAll(); startSyncTimer()
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        if let error { addLog("NOTIFY ERROR: \(error.localizedDescription)") }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -147,32 +171,56 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     private func processQueue(_ p: CBPeripheral, _ c: CBCharacteristic) {
-        guard !writing, !queue.isEmpty else { return }
+        guard !writing, !queue.isEmpty, p.state == .connected else { return }
         let data = queue.removeFirst(); writing = true; addLog("TX: \(hex(data))")
-        let type: CBCharacteristicWriteType = c.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        // Prefer write-with-response when available. It is slower but substantially safer for Mochi's small BLE RX buffer.
+        let type: CBCharacteristicWriteType = c.properties.contains(.write) ? .withResponse : .withoutResponse
         p.writeValue(data, for: c, type: type)
         if type == .withoutResponse {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                self?.writing = false
-                if let self, let p = self.peripheral, let c = self.rx { self.processQueue(p, c) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                guard let self else { return }
+                self.writing = false
+                if let p = self.peripheral, let c = self.rx { self.processQueue(p, c) }
             }
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         addLog(error == nil ? "TX OK" : "TX ERROR: \(error!.localizedDescription)")
-        writing = false; processQueue(peripheral, characteristic)
+        writing = false
+        if error != nil {
+            queue.removeAll()
+        }
+        processQueue(peripheral, characteristic)
     }
 
-    func syncAll() { sendBattery(); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.sendTime() } }
-    @objc private func batteryChanged() { if ready { sendBattery() } }
+    func syncAll() {
+        sendBattery()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) { [weak self] in self?.sendTime() }
+    }
+
+    @objc private func batteryChanged() { updateBatteryValue(); if ready { sendBattery() } }
+
+    private func updateBatteryValue() {
+        let raw = UIDevice.current.batteryLevel
+        if raw >= 0 {
+            battery = max(0, min(100, Int(round(raw * 100))))
+        } else {
+            battery = 0
+            addLog("BATTERY: iOS пока не отдал уровень")
+        }
+    }
 
     func sendBattery() {
         guard ready else { return }
-        let level = max(0, min(100, Int(round(UIDevice.current.batteryLevel * 100))))
-        battery = level
+        updateBatteryValue()
+        let raw = UIDevice.current.batteryLevel
+        guard raw >= 0 else { addLog("BATTERY SKIP: level unavailable"); return }
+        let level = max(0, min(100, Int(round(raw * 100))))
         let charging: UInt8 = (UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full) ? 1 : 0
-        send([0xAB,0x00,0x05,0xFF,0x91,0x80,charging,UInt8(level)], label: "BATTERY")
+        battery = level
+        // Confirmed Mochi battery frame shape from LightBlue: AB 00 05 FF 91 80 00 <percent>.
+        send([0xAB,0x00,0x05,0xFF,0x91,0x80,charging,UInt8(level)], label: "BATTERY \(level)%")
     }
 
     func sendTime() {
@@ -221,8 +269,11 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { navigationState = "Укажи пункт назначения"; return }
         destinationText = query
-        if location.authorizationStatus == .notDetermined { location.requestWhenInUseAuthorization() }
-        guard let user = location.location else { location.requestLocation(); navigationState = "Определи местоположение и нажми ещё раз"; return }
+        if location.authorizationStatus == .notDetermined { location.requestWhenInUseAuthorization(); navigationState = "Разреши геолокацию и нажми ещё раз"; return }
+        guard location.authorizationStatus == .authorizedWhenInUse || location.authorizationStatus == .authorizedAlways else {
+            navigationState = "Разреши геолокацию в Настройки → Mochi Bridge"; return
+        }
+        guard let user = location.location else { location.requestLocation(); navigationState = "Определяю местоположение…"; return }
         let request = MKLocalSearch.Request(); request.naturalLanguageQuery = query
         request.region = MKCoordinateRegion(center:user.coordinate, latitudinalMeters:10000, longitudinalMeters:10000)
         MKLocalSearch(request: request).start { [weak self] response, error in
@@ -238,10 +289,12 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func stopNavigation() {
-        navigating = false; route = nil; location.stopUpdatingLocation(); navigationState = "Не запущена"; sendNavigationInactive()
+        navigating = false; route = nil; location.stopUpdatingLocation(); navigationState = "Не запущена"
+        if ready { sendNavigationInactive() }
     }
 
     func openMaps() {
+        guard !destinationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let encoded = destinationText.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed), let url = URL(string: "http://maps.apple.com/?q=\(encoded)") else { return }
         UIApplication.shared.open(url)
     }
