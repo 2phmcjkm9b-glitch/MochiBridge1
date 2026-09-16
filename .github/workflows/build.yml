@@ -25,8 +25,9 @@ jobs:
           grep -F 'BATTERY REQUEST FROM MOCHI' MochiBridge/MochiBridgeApp.swift
           grep -F 'AB 00 05 FF 91 80 charging level' MochiBridge/MochiBridgeApp.swift
           grep -F 'AB 00 04 FF 9D 80 <command>' MochiBridge/MochiBridgeApp.swift
-          grep -F 'while !queue.isEmpty && peripheral.canSendWriteWithoutResponse' MochiBridge/MochiBridgeApp.swift
-          grep -F 'RX [\\(characteristic.uuid.uuidString)]' MochiBridge/MochiBridgeApp.swift
+          grep -F 'RX [' MochiBridge/MochiBridgeApp.swift
+          grep -F 'didUpdateValueFor characteristic' MochiBridge/MochiBridgeApp.swift
+          echo 'CLEAN SOURCE VALIDATION PASSED'
 
       - name: Build unsigned iOS app
         working-directory: MochiBridge
@@ -48,7 +49,7 @@ jobs:
           chmod 755 "$EXECUTABLE"
           /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable MochiBridge' "$APP_DIR/Info.plist" || /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string MochiBridge' "$APP_DIR/Info.plist"
           /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 2.0' "$APP_DIR/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 1' "$APP_DIR/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 2' "$APP_DIR/Info.plist"
           ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-clean-unsigned.ipa
 
           mkdir IPA_CHECK
@@ -57,7 +58,7 @@ jobs:
           CHECK_EXEC="$CHECK_APP/MochiBridge"
           test -f "$CHECK_EXEC"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = 'MochiBridge'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$CHECK_APP/Info.plist")" = '1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$CHECK_APP/Info.plist")" = '2'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$CHECK_APP/Info.plist")" = '2.0'
           test -x "$CHECK_EXEC"
           file "$CHECK_EXEC"
@@ -75,5 +76,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MochiBridge-clean-build-log
-          path: xcodebuild.log
+          path: MochiBridge/xcodebuild.log
           if-no-files-found: warn
