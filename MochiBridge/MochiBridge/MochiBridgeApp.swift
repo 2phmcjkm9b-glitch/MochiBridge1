@@ -281,25 +281,90 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func sendNotification(text: String) {
-        let payload = Array(text.utf8)
+        let converted = transliterateRussian(text)
+        let payload = Array(converted.utf8)
         let length = 5 + payload.count
         guard length <= 0xFF else { addLog("NOTIFY SKIP: текст слишком длинный"); return }
+        addLog("NOTIFY TEXT: \(converted)")
         write([0xAB, 0x00, UInt8(length), 0xFF, 0x72, 0x80, 0x0A, 0x02] + payload, label: "NOTIFICATION")
     }
 
-    private func musicCommand(_ lowByte: UInt8, name: String) {
-        guard ready else { addLog("MUSIC SKIP \(name): BLE не готов"); return }
-        let packet: [UInt8] = [0xAB, 0x00, 0x04, 0xFF, 0x9D, 0x80, lowByte]
-        addLog("MUSIC BUTTON: \(name)")
-        write(packet, label: "MUSIC \(name)")
+    private func transliterateRussian(_ text: String) -> String {
+        let map: [Character: String] = [
+            "А":"A","Б":"B","В":"V","Г":"G","Д":"D","Е":"E","Ё":"Yo","Ж":"Zh","З":"Z","И":"I","Й":"Y","К":"K","Л":"L","М":"M","Н":"N","О":"O","П":"P","Р":"R","С":"S","Т":"T","У":"U","Ф":"F","Х":"Kh","Ц":"Ts","Ч":"Ch","Ш":"Sh","Щ":"Sch","Ъ":"","Ы":"Y","Ь":"","Э":"E","Ю":"Yu","Я":"Ya",
+            "а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"yo","ж":"zh","з":"z","и":"i","й":"y","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f","х":"kh","ц":"ts","ч":"ch","ш":"sh","щ":"sch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya"
+        ]
+        return text.map { map[$0] ?? String($0) }.joined()
     }
 
-    func musicPlayPause() { musicCommand(0x00, name: "PLAY/PAUSE") }
-    func musicPrevious() { musicCommand(0x02, name: "PREVIOUS") }
-    func musicNext() { musicCommand(0x03, name: "NEXT") }
+    // MARK: - Music
+
+    // Confirmed from ChronosESP32 source:
+    // FF/9D/80..03 are ESP32 -> phone music-control commands.
+    // FE/9D/80..82 are phone -> ESP32 music state/title/artist packets.
+    private var musicPlaying = false
+    private let musicAppName = "MochiBridge"
+    private let musicPackageName = "com.vitaliy.MochiBridge"
+    private let musicTitle = "Mochi Music"
+    private let musicArtist = "iPhone"
+
+    func musicPlayPause() {
+        guard ready else { addLog("MUSIC SKIP: BLE не готов"); return }
+        musicPlaying.toggle()
+        addLog("MUSIC STATE: \(musicPlaying ? "PLAY" : "PAUSE")")
+        sendMusicInfo()
+    }
+
+    func musicPrevious() {
+        guard ready else { addLog("MUSIC SKIP PREVIOUS: BLE не готов"); return }
+        addLog("MUSIC BUTTON: PREVIOUS")
+        sendMusicInfo()
+    }
+
+    func musicNext() {
+        guard ready else { addLog("MUSIC SKIP NEXT: BLE не готов"); return }
+        addLog("MUSIC BUTTON: NEXT")
+        sendMusicInfo()
+    }
+
+    private func sendMusicInfo() {
+        sendMusicState()
+        sendMusicTitle()
+        sendMusicArtist()
+    }
+
+    private func sendMusicState() {
+        let app = Array(musicAppName.utf8) + [0x00]
+        let package = Array(musicPackageName.utf8) + [0x00]
+        let body: [UInt8] = [
+            0xFE, 0x9D, 0x80,
+            musicPlaying ? 0x01 : 0x00,
+            0x00, 0x00, 0x00,
+            0xFF, 0xFF, 0xFF
+        ] + app + package
+        sendChronosPacket(body, label: "MUSIC STATE")
+    }
+
+    private func sendMusicTitle() {
+        let body: [UInt8] = [0xFE, 0x9D, 0x81] + Array(musicTitle.utf8) + [0x00]
+        sendChronosPacket(body, label: "MUSIC TITLE")
+    }
+
+    private func sendMusicArtist() {
+        let body: [UInt8] = [0xFE, 0x9D, 0x82] + Array(musicArtist.utf8) + [0x00]
+        sendChronosPacket(body, label: "MUSIC ARTIST")
+    }
+
+    private func sendChronosPacket(_ body: [UInt8], label: String) {
+        guard body.count <= 0xFF else {
+            addLog("\(label) SKIP: пакет слишком длинный")
+            return
+        }
+        write([0xAB, 0x00, UInt8(body.count)] + body, label: label)
+    }
 
     func sendIncomingCall() {
-        let payload = Array("Входящий".utf8)
+        let payload = Array(transliterateRussian("Входящий").utf8)
         let length = UInt8(5 + payload.count)
         write([0xAB, 0x00, length, 0xFF, 0x72, 0x80, 0x01, 0x01] + payload, label: "CALL IN")
     }
