@@ -1,4 +1,4 @@
-name: Build MochiBridge iOS
+name: Build MochiBridge iOS v24
 
 on:
   workflow_dispatch:
@@ -13,6 +13,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Apply v24 protocol fixes
+        run: python3 MochiBridge/fix_v24.py
 
       - name: Build unsigned iOS app
         working-directory: MochiBridge
@@ -31,59 +34,30 @@ jobs:
       - name: Prepare and validate IPA
         run: |
           set -euo pipefail
-
-          APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos \
-            -maxdepth 1 -name "*.app" -type d | head -n 1)
-
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: MochiBridge.app was not found"
-            exit 1
-          fi
-
-          rm -rf Payload IPA_CHECK MochiBridge-unsigned.ipa
+          APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" -type d | head -n 1)
+          test -n "$APP_PATH"
+          rm -rf Payload IPA_CHECK MochiBridge-v24-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-
           APP_DIR="Payload/$(basename "$APP_PATH")"
           EXECUTABLE="$APP_DIR/MochiBridge"
-
           test -f "$EXECUTABLE"
           chmod 755 "$EXECUTABLE"
-
-          /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleExecutable MochiBridge" \
-            "$APP_DIR/Info.plist" || \
-          /usr/libexec/PlistBuddy \
-            -c "Add :CFBundleExecutable string MochiBridge" \
-            "$APP_DIR/Info.plist"
-
-          echo "=== APP CHECK ==="
-          ls -l "$EXECUTABLE"
-          file "$EXECUTABLE"
-          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_DIR/Info.plist"
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_DIR/Info.plist"
-
-          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-unsigned.ipa
-
-          echo "=== IPA CHECK ==="
-          unzip -l MochiBridge-unsigned.ipa
-          rm -rf IPA_CHECK
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable MochiBridge" "$APP_DIR/Info.plist" || /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string MochiBridge" "$APP_DIR/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-v24-unsigned.ipa
           mkdir IPA_CHECK
-          unzip -q MochiBridge-unsigned.ipa -d IPA_CHECK
-
+          unzip -q MochiBridge-v24-unsigned.ipa -d IPA_CHECK
           CHECK_APP="IPA_CHECK/Payload/MochiBridge.app"
           CHECK_EXEC="$CHECK_APP/MochiBridge"
-
           test -f "$CHECK_EXEC"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = "MochiBridge"
           test -x "$CHECK_EXEC"
           file "$CHECK_EXEC"
-
-          echo "IPA VALIDATION PASSED"
+          echo "V24 IPA VALIDATION PASSED"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MochiBridge-unsigned-IPA
-          path: MochiBridge-unsigned.ipa
+          name: MochiBridge-v24-unsigned-IPA
+          path: MochiBridge-v24-unsigned.ipa
           if-no-files-found: error
