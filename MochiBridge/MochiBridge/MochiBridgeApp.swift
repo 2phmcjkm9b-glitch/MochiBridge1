@@ -57,8 +57,6 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         location.distanceFilter = 10
         NotificationCenter.default.addObserver(self, selector: #selector(batteryChanged), name: UIDevice.batteryLevelDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(batteryChanged), name: UIDevice.batteryStateDidChangeNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(musicChanged), name: MPMusicPlayerController.playbackStateDidChangeNotification, object: music)
-        NotificationCenter.default.addObserver(self, selector: #selector(musicChanged), name: MPMusicPlayerController.nowPlayingItemDidChangeNotification, object: music)
         music.beginGeneratingPlaybackNotifications()
         MPMediaLibrary.requestAuthorization { _ in }
     }
@@ -80,8 +78,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
 
     func scan() {
         guard central.state == .poweredOn, !connected, !isConnecting else { return }
-        reconnectTimer?.invalidate()
-        central.stopScan()
+        reconnectTimer?.invalidate(); central.stopScan()
         status = "Ищу THE MOCHI…"
         central.scanForPeripherals(withServices: [Self.serviceUUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
@@ -91,9 +88,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         }
     }
 
-    func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        connect(p)
-    }
+    func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) { connect(p) }
 
     func connect(_ p: CBPeripheral) {
         guard !connected, !isConnecting else { return }
@@ -110,8 +105,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        isConnecting = false; connected = false; ready = false
-        scheduleReconnect(1)
+        isConnecting = false; connected = false; ready = false; scheduleReconnect(1)
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -126,9 +120,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard error == nil, let s = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
-            central.cancelPeripheralConnection(peripheral); return
-        }
+        guard error == nil, let s = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else { central.cancelPeripheralConnection(peripheral); return }
         peripheral.discoverCharacteristics([Self.rxUUID, Self.txUUID], for: s)
     }
 
@@ -138,9 +130,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
             if c.uuid == Self.rxUUID { rx = c }
             if c.uuid == Self.txUUID { tx = c; peripheral.setNotifyValue(true, for: c) }
         }
-        guard let r = rx, r.properties.contains(.write) || r.properties.contains(.writeWithoutResponse) else {
-            status = "RX не поддерживает запись"; return
-        }
+        guard let r = rx, r.properties.contains(.write) || r.properties.contains(.writeWithoutResponse) else { status = "RX не поддерживает запись"; return }
         ready = true; status = "Подключено"
         addLog("BLE READY RX=\(r.properties.rawValue) TX=\(tx != nil ? "OK" : "нет")")
         syncAll(); startSyncTimer()
@@ -148,8 +138,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let data = characteristic.value else { return }
-        addLog("RX: \(hex(data))")
-        handleRobotCommand(Array(data))
+        addLog("RX: \(hex(data))"); handleRobotCommand(Array(data))
     }
 
     private func send(_ bytes: [UInt8], label: String) {
@@ -164,7 +153,8 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         p.writeValue(data, for: c, type: type)
         if type == .withoutResponse {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                self?.writing = false; if let self, let p = self.peripheral, let c = self.rx { self.processQueue(p, c) }
+                self?.writing = false
+                if let self, let p = self.peripheral, let c = self.rx { self.processQueue(p, c) }
             }
         }
     }
@@ -181,8 +171,8 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         guard ready else { return }
         let level = max(0, min(100, Int(round(UIDevice.current.batteryLevel * 100))))
         battery = level
-        let charging = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
-        send([0xAB,0x00,0x05,0xFF,0x91,0x80,charging ? 1 : 0,UInt8(level)], label: "BATTERY")
+        let charging: UInt8 = (UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full) ? 1 : 0
+        send([0xAB,0x00,0x05,0xFF,0x91,0x80,charging,UInt8(level)], label: "BATTERY")
     }
 
     func sendTime() {
@@ -210,11 +200,6 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         guard b.count >= 7, b[0] == 0xAB, b[3] == 0xFF else { return }
         if b[4] == 0x9D && b[5] == 0x80 {
             switch b[6] { case 0x00: musicPlay(); case 0x01: musicPause(); case 0x02: musicPrevious(); case 0x03: musicNext(); default: break }
-        } else if b[4] == 0x99 && b[5] == 0x80 {
-            if b[6] == 0x00 { musicToggle() }
-            else if b[6] == 0xA1 { music.volume = min(1, music.volume + 0.05) }
-            else if b[6] == 0xA2 { music.volume = max(0, music.volume - 0.05) }
-            else if b[6] == 0xA3 { music.volume = 0 }
         }
     }
 
@@ -223,14 +208,11 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     func musicToggle() { music.playbackState == .playing ? musicPause() : musicPlay() }
     func musicPrevious() { music.skipToPreviousItem(); addLog("MUSIC PREVIOUS") }
     func musicNext() { music.skipToNextItem(); addLog("MUSIC NEXT") }
-    @objc private func musicChanged() { musicState = music.playbackState == .playing ? "▶︎" : "⏸" }
 
     func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
         if !call.hasEnded && !call.isOutgoing && !call.hasConnected {
             if activeCalls.insert(call.uuid).inserted { callState = "Входящий"; sendIncomingCall() }
-        } else if call.hasEnded && activeCalls.remove(call.uuid) != nil {
-            callState = "Нет звонка"; endCall()
-        }
+        } else if call.hasEnded && activeCalls.remove(call.uuid) != nil { callState = "Нет звонка"; endCall() }
     }
 
     func setDestination(_ text: String) { destinationText = text }
@@ -241,27 +223,22 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         destinationText = query
         if location.authorizationStatus == .notDetermined { location.requestWhenInUseAuthorization() }
         guard let user = location.location else { location.requestLocation(); navigationState = "Определи местоположение и нажми ещё раз"; return }
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = query
+        let request = MKLocalSearch.Request(); request.naturalLanguageQuery = query
         request.region = MKCoordinateRegion(center:user.coordinate, latitudinalMeters:10000, longitudinalMeters:10000)
         MKLocalSearch(request: request).start { [weak self] response, error in
             guard let self, let item = response?.mapItems.first, error == nil else { self?.navigationState = "Не найден пункт назначения"; return }
-            let req = MKDirections.Request()
-            req.source = MKMapItem(placemark: MKPlacemark(coordinate: user.coordinate))
-            req.destination = item
-            req.transportType = .automobile
+            let req = MKDirections.Request(); req.source = MKMapItem(placemark: MKPlacemark(coordinate: user.coordinate)); req.destination = item; req.transportType = .automobile
             MKDirections(request: req).calculate { [weak self] response, error in
                 guard let self, let r = response?.routes.first, error == nil else { self?.navigationState = "Не удалось построить маршрут"; return }
                 self.route = r; self.navStep = min(1, max(0, r.steps.count - 1)); self.navigating = true
-                self.navigationState = "Маршрут: \(r.distance/1000, specifier: "%.1f") км"
+                self.navigationState = "Маршрут: \(String(format: "%.1f", r.distance / 1000)) км"
                 self.location.startUpdatingLocation(); self.sendNavigation()
             }
         }
     }
 
     func stopNavigation() {
-        navigating = false; route = nil; location.stopUpdatingLocation(); navigationState = "Не запущена"
-        sendNavigationInactive()
+        navigating = false; route = nil; location.stopUpdatingLocation(); navigationState = "Не запущена"; sendNavigationInactive()
     }
 
     func openMaps() {
@@ -270,7 +247,7 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
     }
 
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
-        if status == .authorizedWhenInUse || status == .authorizedAlways { if navigating { manager.startUpdatingLocation() } }
+        if status == .authorizedWhenInUse || status == .authorizedAlways, navigating { manager.startUpdatingLocation() }
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard navigating, let loc = locations.last, let r = route else { return }
@@ -285,20 +262,18 @@ final class MochiBridge: NSObject, ObservableObject, CBCentralManagerDelegate, C
         let direction = step.instructions.isEmpty ? "Продолжайте движение" : step.instructions
         let distance = step.distance >= 1000 ? String(format: "%.1f km", step.distance/1000) : String(format: "%.0f m", step.distance)
         let eta = Date().addingTimeInterval(r.expectedTravelTime).formatted(date: .omitted, time: .shortened)
-        sendNavPacket(title:"Navigation", duration:formatDuration(r.expectedTravelTime), distance:distance, eta:eta, directions:direction, speed:"")
+        sendNavPacket(title:"Navigation", duration:formatDuration(r.expectedTravelTime), distance:distance, eta:eta, directions:direction)
     }
     private func sendNavigationInactive() { send([0xAB,0x00,0x03,0xFE,0xEF,0x80,0x00], label:"NAV STOP") }
-    private func sendNavPacket(title:String,duration:String,distance:String,eta:String,directions:String,speed:String) {
+    private func sendNavPacket(title:String,duration:String,distance:String,eta:String,directions:String) {
         var body:[UInt8] = [0xFE,0xEF,0x80,0x00,0x00,0x00,0x00]
-        for s in [title,duration,distance,eta,directions,speed] { body += Array(s.utf8) + [0] }
-        guard body.count <= 255 else { return }
-        send([0xAB,0x00,UInt8(body.count)] + body, label:"NAV")
+        for s in [title,duration,distance,eta,directions] { body += Array(s.utf8) + [0] }
+        guard body.count <= 255 else { return }; send([0xAB,0x00,UInt8(body.count)] + body, label:"NAV")
     }
     private func formatDuration(_ seconds:TimeInterval)->String { let m=max(0,Int(seconds/60)); return m >= 60 ? "\(m/60) h \(m%60) min" : "\(m) min" }
 
     private func startSyncTimer() {
-        syncTimer?.invalidate()
-        syncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.syncAll() }
+        syncTimer?.invalidate(); syncTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.syncAll() }
     }
 
     private func transliterate(_ text:String)->String {
