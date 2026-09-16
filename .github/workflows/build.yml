@@ -1,4 +1,4 @@
-name: Build MochiBridge iOS v27
+name: Build MochiBridge iOS v28
 
 on:
   workflow_dispatch:
@@ -12,41 +12,66 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Apply v27 BLE, battery and Music fixes
-        run: python3 MochiBridge/fix_v27.py
+
+      - name: Apply clean v28 protocol implementation
+        run: python3 MochiBridge/fix_v28.py
+
+      - name: Validate source markers
+        working-directory: MochiBridge
+        run: |
+          set -euo pipefail
+          grep -F 'NOTIFY ON — BLE READY FOR TX/RX' MochiBridge/MochiBridgeApp.swift
+          grep -F 'BATTERY RAW=' MochiBridge/MochiBridgeApp.swift
+          grep -F 'b.count == 7' MochiBridge/MochiBridgeApp.swift
+          grep -F 'Apple Music:' MochiBridge/MochiBridgeApp.swift
+          python3 -m py_compile fix_v28.py
+
       - name: Build unsigned iOS app
         working-directory: MochiBridge
         run: |
-          set -e
-          xcodebuild -project MochiBridge.xcodeproj -scheme MochiBridge -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          set -euo pipefail
+          xcodebuild -project MochiBridge.xcodeproj -scheme MochiBridge -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tee ../xcodebuild.log
+
       - name: Prepare and validate IPA
         run: |
           set -euo pipefail
-          APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" -type d | head -n 1)
+          APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -n 1)
           test -n "$APP_PATH"
-          rm -rf Payload IPA_CHECK MochiBridge-v27-unsigned.ipa
+          rm -rf Payload IPA_CHECK MochiBridge-v28-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           APP_DIR="Payload/$(basename "$APP_PATH")"
           EXECUTABLE="$APP_DIR/MochiBridge"
           test -f "$EXECUTABLE"
           chmod 755 "$EXECUTABLE"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable MochiBridge" "$APP_DIR/Info.plist" || /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string MochiBridge" "$APP_DIR/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.3" "$APP_DIR/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 5" "$APP_DIR/Info.plist"
-          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-v27-unsigned.ipa
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable MochiBridge' "$APP_DIR/Info.plist" || /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string MochiBridge' "$APP_DIR/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 1.4' "$APP_DIR/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 8' "$APP_DIR/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-v28-unsigned.ipa
+
           mkdir IPA_CHECK
-          unzip -q MochiBridge-v27-unsigned.ipa -d IPA_CHECK
-          CHECK_APP="IPA_CHECK/Payload/MochiBridge.app"
+          unzip -q MochiBridge-v28-unsigned.ipa -d IPA_CHECK
+          CHECK_APP='IPA_CHECK/Payload/MochiBridge.app'
           CHECK_EXEC="$CHECK_APP/MochiBridge"
           test -f "$CHECK_EXEC"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = "MochiBridge"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$CHECK_APP/Info.plist")" = "5"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = 'MochiBridge'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$CHECK_APP/Info.plist")" = '8'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$CHECK_APP/Info.plist")" = '1.4'
           test -x "$CHECK_EXEC"
-          echo "V27 IPA VALIDATION PASSED"
+          file "$CHECK_EXEC"
+          echo 'V28 IPA VALIDATION PASSED'
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MochiBridge-v27-unsigned-IPA
-          path: MochiBridge-v27-unsigned.ipa
+          name: MochiBridge-v28-unsigned-IPA
+          path: MochiBridge-v28-unsigned.ipa
           if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MochiBridge-v28-build-log
+          path: xcodebuild.log
+          if-no-files-found: warn
