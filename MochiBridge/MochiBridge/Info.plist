@@ -7,10 +7,11 @@
 	<key>CFBundleName</key><string>MochiBridge</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>1.1</string>
-	<key>CFBundleVersion</key><string>2</string>
+	<key>CFBundleVersion</key><string>3</string>
 	<key>LSRequiresIPhoneOS</key><true/>
 	<key>NSBluetoothAlwaysUsageDescription</key><string>Mochi Bridge использует Bluetooth для подключения к роботу The Mochi.</string>
 	<key>NSLocationWhenInUseUsageDescription</key><string>Mochi Bridge использует геопозицию для расчёта навигации и отправки подсказок на The Mochi.</string>
+	<key>NSAppleMusicUsageDescription</key><string>Mochi Bridge использует доступ к Apple Music для управления воспроизведением.</string>
 	<key>UIBackgroundModes</key><array><string>bluetooth-central</string></array>
 	<key>UILaunchScreen</key><dict/>
 </dict>
