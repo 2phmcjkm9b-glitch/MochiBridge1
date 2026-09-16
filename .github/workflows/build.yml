@@ -1,4 +1,4 @@
-name: Build MochiBridge iOS v24
+name: Build MochiBridge iOS v25
 
 on:
   workflow_dispatch:
@@ -12,8 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Apply v24b BLE fixes
-        run: python3 MochiBridge/fix_v24b.py
+      - name: Apply v25 BLE fixes
+        run: python3 MochiBridge/fix_v25.py
       - name: Build unsigned iOS app
         working-directory: MochiBridge
         run: |
@@ -24,7 +24,7 @@ jobs:
           set -euo pipefail
           APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" -type d | head -n 1)
           test -n "$APP_PATH"
-          rm -rf Payload IPA_CHECK MochiBridge-v24-unsigned.ipa
+          rm -rf Payload IPA_CHECK MochiBridge-v25-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           APP_DIR="Payload/$(basename "$APP_PATH")"
@@ -32,18 +32,18 @@ jobs:
           test -f "$EXECUTABLE"
           chmod 755 "$EXECUTABLE"
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable MochiBridge" "$APP_DIR/Info.plist" || /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string MochiBridge" "$APP_DIR/Info.plist"
-          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-v24-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-v25-unsigned.ipa
           mkdir IPA_CHECK
-          unzip -q MochiBridge-v24-unsigned.ipa -d IPA_CHECK
+          unzip -q MochiBridge-v25-unsigned.ipa -d IPA_CHECK
           CHECK_APP="IPA_CHECK/Payload/MochiBridge.app"
           CHECK_EXEC="$CHECK_APP/MochiBridge"
           test -f "$CHECK_EXEC"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = "MochiBridge"
           test -x "$CHECK_EXEC"
-          echo "V24 IPA VALIDATION PASSED"
+          echo "V25 IPA VALIDATION PASSED"
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MochiBridge-v24-unsigned-IPA
-          path: MochiBridge-v24-unsigned.ipa
+          name: MochiBridge-v25-unsigned-IPA
+          path: MochiBridge-v25-unsigned.ipa
           if-no-files-found: error
