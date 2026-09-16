@@ -18,11 +18,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 fix_v31.py
-          test -f MochiBridge/MochiBridge/MochiBridgeApp.swift
-          grep -F 'TX WITH_RESPONSE' MochiBridge/MochiBridge/MochiBridgeApp.swift
-          grep -F 'BATTERY PACKET:' MochiBridge/MochiBridge/MochiBridgeApp.swift
-          grep -F 'MUSIC RX command=' MochiBridge/MochiBridge/MochiBridgeApp.swift
-          grep -F 'MUSIC TX command=' MochiBridge/MochiBridge/MochiBridgeApp.swift
+          test -f MochiBridge/MochiBridgeApp.swift
+          grep -F 'TX WITH_RESPONSE' MochiBridge/MochiBridgeApp.swift
+          grep -F 'BATTERY PACKET:' MochiBridge/MochiBridgeApp.swift
+          grep -F 'MUSIC RX command=' MochiBridge/MochiBridgeApp.swift
+          grep -F 'MUSIC TX command=' MochiBridge/MochiBridgeApp.swift
           echo 'V31 SOURCE PATCH PASSED'
 
       - name: Build unsigned iOS app
@@ -67,8 +67,6 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = 'MochiBridge'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$CHECK_APP/Info.plist")" = '31'
 
-          # Validate the binary without brittle `strings` substring checks. Swift may store
-          # string literals in different sections/encodings between Xcode versions.
           /usr/bin/file "$CHECK_EXEC"
           /usr/bin/otool -hv "$CHECK_EXEC"
           /usr/bin/codesign --verify --deep --strict "$CHECK_APP" 2>/dev/null || true
