@@ -1,4 +1,4 @@
-name: Build MochiBridge iOS clean
+name: Build MochiBridge iOS clean v29
 
 on:
   workflow_dispatch:
@@ -13,7 +13,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate clean source
+      - name: Apply v29 Chronos BLE protocol fix
+        working-directory: MochiBridge
+        run: |
+          set -euo pipefail
+          python3 fix_v29.py
+          grep -F 'TX WITH_RESPONSE' MochiBridge/MochiBridgeApp.swift
+          grep -F 'BATTERY REQUEST FROM MOCHI' MochiBridge/MochiBridgeApp.swift
+          grep -F 'MOCHI BATTERY RX' MochiBridge/MochiBridgeApp.swift
+          grep -F 'MUSIC RX command=' MochiBridge/MochiBridgeApp.swift
+          echo 'V29 SOURCE PATCH PASSED'
+
+      - name: Validate source
         working-directory: MochiBridge
         run: |
           set -euo pipefail
@@ -22,12 +33,11 @@ jobs:
           grep -F '6E400002-B5A3-F393-E0A9-E50E24DCCA9E' MochiBridge/MochiBridgeApp.swift
           grep -F '6E400003-B5A3-F393-E0A9-E50E24DCCA9E' MochiBridge/MochiBridgeApp.swift
           grep -F 'NOTIFY ON — BLE READY FOR TX/RX' MochiBridge/MochiBridgeApp.swift
-          grep -F 'BATTERY REQUEST FROM MOCHI' MochiBridge/MochiBridgeApp.swift
           grep -F 'AB 00 05 FF 91 80 charging level' MochiBridge/MochiBridgeApp.swift
-          grep -F 'AB 00 04 FF 9D 80 <command>' MochiBridge/MochiBridgeApp.swift
-          grep -F 'RX [' MochiBridge/MochiBridgeApp.swift
-          grep -F 'didUpdateValueFor characteristic' MochiBridge/MochiBridgeApp.swift
-          echo 'CLEAN SOURCE VALIDATION PASSED'
+          grep -F 'TX WITH_RESPONSE' MochiBridge/MochiBridgeApp.swift
+          grep -F 'MUSIC RX command=' MochiBridge/MochiBridgeApp.swift
+          grep -F 'UIDevice.current.isBatteryMonitoringEnabled = true' MochiBridge/MochiBridgeApp.swift
+          echo 'SOURCE VALIDATION PASSED'
 
       - name: Build unsigned iOS app
         working-directory: MochiBridge
@@ -40,7 +50,7 @@ jobs:
           set -euo pipefail
           APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -n 1)
           test -n "$APP_PATH"
-          rm -rf Payload IPA_CHECK MochiBridge-clean-unsigned.ipa
+          rm -rf Payload IPA_CHECK MochiBridge-v29-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           APP_DIR="Payload/$(basename "$APP_PATH")"
@@ -48,33 +58,35 @@ jobs:
           test -f "$EXECUTABLE"
           chmod 755 "$EXECUTABLE"
           /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable MochiBridge' "$APP_DIR/Info.plist" || /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string MochiBridge' "$APP_DIR/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 2.0' "$APP_DIR/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 2' "$APP_DIR/Info.plist"
-          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-clean-unsigned.ipa
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 2.1' "$APP_DIR/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 29' "$APP_DIR/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-v29-unsigned.ipa
 
           mkdir IPA_CHECK
-          unzip -q MochiBridge-clean-unsigned.ipa -d IPA_CHECK
+          unzip -q MochiBridge-v29-unsigned.ipa -d IPA_CHECK
           CHECK_APP='IPA_CHECK/Payload/MochiBridge.app'
           CHECK_EXEC="$CHECK_APP/MochiBridge"
           test -f "$CHECK_EXEC"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = 'MochiBridge'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$CHECK_APP/Info.plist")" = '2'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$CHECK_APP/Info.plist")" = '2.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$CHECK_APP/Info.plist")" = '29'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$CHECK_APP/Info.plist")" = '2.1'
           test -x "$CHECK_EXEC"
-          file "$CHECK_EXEC"
-          echo 'CLEAN IPA VALIDATION PASSED'
+          strings "$CHECK_EXEC" | grep -F 'TX WITH_RESPONSE'
+          strings "$CHECK_EXEC" | grep -F 'MOCHI BATTERY RX'
+          strings "$CHECK_EXEC" | grep -F 'MUSIC RX command='
+          echo 'V29 IPA VALIDATION PASSED'
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MochiBridge-clean-unsigned-IPA
-          path: MochiBridge-clean-unsigned.ipa
+          name: MochiBridge-v29-unsigned-IPA
+          path: MochiBridge-v29-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MochiBridge-clean-build-log
+          name: MochiBridge-v29-build-log
           path: MochiBridge/xcodebuild.log
           if-no-files-found: warn
