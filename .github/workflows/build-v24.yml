@@ -12,24 +12,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Apply v24 fixes
-        run: python3 MochiBridge/fix_v24.py
-
+      - name: Apply v24b BLE fixes
+        run: python3 MochiBridge/fix_v24b.py
       - name: Build unsigned iOS app
         working-directory: MochiBridge
         run: |
           set -e
-          xcodebuild \
-            -project MochiBridge.xcodeproj \
-            -scheme MochiBridge \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
-
+          xcodebuild -project MochiBridge.xcodeproj -scheme MochiBridge -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
       - name: Validate source transformation and IPA
         run: |
           set -euo pipefail
@@ -47,11 +36,11 @@ jobs:
           mkdir IPA_CHECK
           unzip -q MochiBridge-v24-unsigned.ipa -d IPA_CHECK
           CHECK_APP="IPA_CHECK/Payload/MochiBridge.app"
-          test -f "$CHECK_APP/MochiBridge"
+          CHECK_EXEC="$CHECK_APP/MochiBridge"
+          test -f "$CHECK_EXEC"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = "MochiBridge"
-          test -x "$CHECK_APP/MochiBridge"
-          echo "V24 IPA VALIDATION PASSED"
-
+          test -x "$CHECK_EXEC"
+          echo "V24B IPA VALIDATION PASSED"
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
