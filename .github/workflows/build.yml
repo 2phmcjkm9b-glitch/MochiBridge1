@@ -13,18 +13,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Apply clean v28 protocol implementation
-        run: python3 MochiBridge/fix_v28.py
+      - name: Apply deterministic v28b protocol implementation
+        run: python3 MochiBridge/fix_v28b.py
 
       - name: Validate source markers
         working-directory: MochiBridge
         run: |
           set -euo pipefail
           grep -F 'NOTIFY ON — BLE READY FOR TX/RX' MochiBridge/MochiBridgeApp.swift
+          grep -F 'TX WITHOUT_RESPONSE:' MochiBridge/MochiBridgeApp.swift
           grep -F 'BATTERY RAW=' MochiBridge/MochiBridgeApp.swift
           grep -F 'b.count == 7' MochiBridge/MochiBridgeApp.swift
           grep -F 'Apple Music:' MochiBridge/MochiBridgeApp.swift
-          python3 -m py_compile fix_v28.py
+          grep -F 'MUSIC PREPARE ERROR:' MochiBridge/MochiBridgeApp.swift
+          python3 -m py_compile fix_v28b.py
 
       - name: Build unsigned iOS app
         working-directory: MochiBridge
