@@ -17,6 +17,7 @@ jobs:
       - name: Build unsigned iOS app
         working-directory: MochiBridge
         run: |
+          set -e
           xcodebuild \
             -project MochiBridge.xcodeproj \
             -scheme MochiBridge \
@@ -27,33 +28,26 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Prepare IPA
+      - name: Prepare and validate IPA
         run: |
-          set -e
+          set -euo pipefail
 
           APP_PATH=$(find MochiBridge/build/Build/Products/Release-iphoneos \
-            -maxdepth 1 \
-            -name "*.app" \
-            -type d | head -n 1)
+            -maxdepth 1 -name "*.app" -type d | head -n 1)
 
           if [ -z "$APP_PATH" ]; then
             echo "ERROR: MochiBridge.app was not found"
             exit 1
           fi
 
-          rm -rf Payload MochiBridge-unsigned.ipa
+          rm -rf Payload IPA_CHECK MochiBridge-unsigned.ipa
           mkdir -p Payload
-
           cp -R "$APP_PATH" Payload/
 
           APP_DIR="Payload/$(basename "$APP_PATH")"
           EXECUTABLE="$APP_DIR/MochiBridge"
 
-          if [ ! -f "$EXECUTABLE" ]; then
-            echo "ERROR: executable not found"
-            exit 1
-          fi
-
+          test -f "$EXECUTABLE"
           chmod 755 "$EXECUTABLE"
 
           /usr/libexec/PlistBuddy \
@@ -63,17 +57,29 @@ jobs:
             -c "Add :CFBundleExecutable string MochiBridge" \
             "$APP_DIR/Info.plist"
 
-          echo "=== EXECUTABLE CHECK ==="
+          echo "=== APP CHECK ==="
           ls -l "$EXECUTABLE"
           file "$EXECUTABLE"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_DIR/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_DIR/Info.plist"
 
-          echo "=== PLIST CHECK ==="
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleExecutable" \
-            "$APP_DIR/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent Payload MochiBridge-unsigned.ipa
 
-          ditto -c -k --sequesterRsrc --keepParent \
-            Payload MochiBridge-unsigned.ipa
+          echo "=== IPA CHECK ==="
+          unzip -l MochiBridge-unsigned.ipa
+          rm -rf IPA_CHECK
+          mkdir IPA_CHECK
+          unzip -q MochiBridge-unsigned.ipa -d IPA_CHECK
+
+          CHECK_APP="IPA_CHECK/Payload/MochiBridge.app"
+          CHECK_EXEC="$CHECK_APP/MochiBridge"
+
+          test -f "$CHECK_EXEC"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = "MochiBridge"
+          test -x "$CHECK_EXEC"
+          file "$CHECK_EXEC"
+
+          echo "IPA VALIDATION PASSED"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
