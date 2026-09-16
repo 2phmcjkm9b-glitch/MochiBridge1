@@ -9,28 +9,16 @@ on:
 jobs:
   build:
     runs-on: macos-15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Apply v24 protocol fixes
-        run: python3 MochiBridge/fix_v24.py
-
+      - name: Apply v24b BLE fixes
+        run: python3 MochiBridge/fix_v24b.py
       - name: Build unsigned iOS app
         working-directory: MochiBridge
         run: |
           set -e
-          xcodebuild \
-            -project MochiBridge.xcodeproj \
-            -scheme MochiBridge \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
-
+          xcodebuild -project MochiBridge.xcodeproj -scheme MochiBridge -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
       - name: Prepare and validate IPA
         run: |
           set -euo pipefail
@@ -52,9 +40,7 @@ jobs:
           test -f "$CHECK_EXEC"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$CHECK_APP/Info.plist")" = "MochiBridge"
           test -x "$CHECK_EXEC"
-          file "$CHECK_EXEC"
           echo "V24 IPA VALIDATION PASSED"
-
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
